@@ -7,7 +7,7 @@
   import { z } from "zod";
   import * as m from "$lib/paraglide/messages.js";
   import { setLocale } from "$lib/paraglide/runtime.js";
-  import { activeCues, activeTrackId, conflicts, createSnapshot, cues, lockTerm, mergeNext, nudgeCue, resolveConflict, restoreSnapshot, reviewCue, reviewEvents, reviewer, selectedCueId, setCueStatus, snapshots, splitCue, terms, tracks, updateCue } from "$lib/stores/subtitles";
+  import { activeCues, activeTrackId, conflicts, continueRearrangement, createSnapshot, cues, lockTerm, mergeNext, nudgeCue, rearrangeState, rearrangeTranslations, resolveConflict, restoreRearrangement, restoreSnapshot, reviewCue, reviewEvents, reviewer, selectedCueId, setCueStatus, snapshots, splitCue, terms, tracks, updateCue } from "$lib/stores/subtitles";
   import type { Cue } from "$lib/stores/subtitles";
 
   const cueSchema = z.object({ source: z.string().min(2), translated: z.string().min(2), start: z.coerce.number().min(0), duration: z.coerce.number().min(0.5).max(30) });
@@ -16,7 +16,10 @@
     validators: zod4(cueSchema),
     onSubmit: async ({ formData }) => {
       const start = Number(formData.get("start") ?? 0);
-      const item: Cue = { id: crypto.randomUUID(), trackId: $activeTrackId, start, end: start + Number(formData.get("duration") ?? 2.5), source: String(formData.get("source") ?? ""), translated: String(formData.get("translated") ?? ""), status: "翻译中", translator: "当前译者", reviewerNote: "" };
+      const sourceText = String(formData.get("source") ?? "");
+      const sourceTrack = get(tracks).find((track) => track.locale === "zh");
+      const sourceCue = sourceTrack ? get(cues).find((cue) => cue.trackId === sourceTrack.id && (cue.source === sourceText || (cue.start < start + 0.5 && cue.end > start))) : undefined;
+      const item: Cue = { id: crypto.randomUUID(), trackId: $activeTrackId, start, end: start + Number(formData.get("duration") ?? 2.5), source: sourceText, translated: String(formData.get("translated") ?? ""), status: "翻译中", translator: "当前译者", reviewerNote: "", sourceCueId: sourceCue?.id };
       cues.update((items) => [...items, item]);
       selectedCueId.set(item.id);
     }
@@ -26,6 +29,13 @@
   const activeTrack = $derived($tracks.find((track) => track.id === $activeTrackId));
   const selected = $derived($cues.find((cue) => cue.id === $selectedCueId));
   let reviewNote = $state("");
+  let notice = $state("");
+  let restoreNotice = $state("");
+
+  function flash(message: string) {
+    notice = message;
+    window.setTimeout(() => { notice = ""; }, 6000);
+  }
 
   function formatTime(value: number) {
     const minutes = Math.floor(value / 60);
@@ -60,7 +70,7 @@
   <main>
     <header><div><small>纪录片《潮汐线》 · 第 3 集</small><h1>{m.title()}</h1><p>多语种轨道、术语锁定与审校反馈在同一时间轴协作。</p></div><div class="header-actions"><select value={$activeTrackId} onchange={(event) => activeTrackId.set(event.currentTarget.value)}>{#each $tracks as track}<option value={track.id}>{track.name}</option>{/each}</select><button onclick={() => setLocale("en")}>EN</button><button onclick={() => setLocale("zh")}>中文</button></div></header>
 
-    <section class="metrics"><article><span>当前轨道</span><b>{activeTrack?.name}</b></article><article><span>字幕条数</span><b>{$activeCues.length}</b></article><article><span>待审</span><b>{$activeCues.filter((cue) => cue.status === "待审").length}</b></article><article><span>已锁定术语</span><b>{$terms.filter((term) => term.status === "已锁定").length}</b></article></section>
+    <section class="metrics"><article><span>当前轨道</span><b>{activeTrack?.name}</b></article><article><span>字幕条数</span><b>{$activeCues.length}</b></article><article><span>待审</span><b>{$activeCues.filter((cue) => cue.status === "待审").length}</b></article><article><span>待复核</span><b>{$activeCues.filter((cue) => cue.status === "待复核").length}</b></article><article><span>已锁定术语</span><b>{$terms.filter((term) => term.status === "已锁定").length}</b></article></section>
 
     <div class="editor-grid">
       <section class="panel timeline">
@@ -70,7 +80,7 @@
             {#each $activeCues as cue}
               <div role="button" tabindex="0" class:selected={cue.id === $selectedCueId} class={`cue ${cue.status}`} onclick={() => selectedCueId.set(cue.id)} onkeydown={(event) => { if (event.key === "Enter" || event.key === " ") selectedCueId.set(cue.id); }}>
                 <time>{formatTime(cue.start)}<small>{formatTime(cue.end)}</small></time>
-                <div><b>{cue.source}</b><p>{cue.translated || "尚未填写译文"}</p></div>
+                <div><b>{cue.source}</b><p>{cue.translated || "尚未填写译文"}</p>{#if cue.invalidReason}<small class="invalid">⚠ {cue.invalidReason}</small>{/if}</div>
                 <span class={`chip ${cue.status}`}>{cue.status}</span>
                 <button class="btn btn-sm" onclick={(event) => { event.stopPropagation(); nudgeCue(cue.id, -0.2); }}>−0.2s</button>
                 <button class="btn btn-sm" onclick={(event) => { event.stopPropagation(); nudgeCue(cue.id, 0.2); }}>+0.2s</button>
@@ -84,12 +94,29 @@
         <section class="panel">
           <div class="panel-head"><h2>字幕编辑</h2>{#if selected}<span class={`chip ${selected.status}`}>{selected.status}</span>{/if}</div>
           {#if selected}
+            {#if selected.status === "待复核"}<div class="invalid-banner"><b>该译文已进入待复核</b><p>{selected.invalidReason}</p></div>{/if}
             <label class="label"><span>原文字幕</span><input class="input" value={selected.source} oninput={(event) => updateCue(selected.id, { source: event.currentTarget.value })} /></label>
             <label class="label"><span>译文</span><textarea class="textarea" value={selected.translated} oninput={(event) => updateCue(selected.id, { translated: event.currentTarget.value })}></textarea></label>
             <div class="time-fields"><label class="label"><span>开始秒</span><input class="input" type="number" step="0.1" value={selected.start} oninput={(event) => updateCue(selected.id, { start: Number(event.currentTarget.value) })} /></label><label class="label"><span>结束秒</span><input class="input" type="number" step="0.1" value={selected.end} oninput={(event) => updateCue(selected.id, { end: Number(event.currentTarget.value) })} /></label></div>
-            <div class="actions"><button class="btn" onclick={() => setCueStatus(selected.id, "待审")}>提交审校</button><button class="btn variant-filled-success" onclick={() => reviewCue(selected.id, true)}>审校通过</button><button class="btn variant-filled-error" onclick={() => reviewCue(selected.id, false, reviewNote || "请核对术语和断句")}>退回修改</button></div>
+            <div class="actions"><button class="btn" onclick={() => setCueStatus(selected.id, "待审")}>提交审校</button><button class="btn variant-filled-success" onclick={() => { if (!reviewCue(selected.id, true)) flash("锁定术语对不上，不能直接通过：请先按术语库修正译文"); }}>审校通过</button><button class="btn variant-filled-error" onclick={() => reviewCue(selected.id, false, reviewNote || "请核对术语和断句")}>退回修改</button></div>
+            {#if notice}<p class="notice">{notice}</p>{/if}
             <label class="label"><span>审校备注</span><input class="input" bind:value={reviewNote} placeholder="退回时填写具体原因" /></label>
           {:else}<p>请先选择一条字幕。</p>{/if}
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><h2>继承重排</h2><small>原字幕轨拆分、合并或挪时间后，按时间锚点与片段标识继承译文</small></div></div>
+          <div class="actions"><button class="btn variant-filled-primary" onclick={rearrangeTranslations}>继承重排</button></div>
+          {#if $rearrangeState.status === "done" && $rearrangeState.report}
+            <p class="rearrange-report">原样保留 {$rearrangeState.report.kept} 条 · 失效待复核 {$rearrangeState.report.invalidated} 条 · 新增 {$rearrangeState.report.added} 条{#if $rearrangeState.report.orphaned} · 孤立保留 {$rearrangeState.report.orphaned} 条{/if}</p>
+          {:else if $rearrangeState.status === "failed" && $rearrangeState.failure}
+            <div class="conflict">
+              <b>重排失败，已恢复上一版时间轴</b>
+              <p>失败锚点 {formatTime($rearrangeState.failure.anchor.start)}–{formatTime($rearrangeState.failure.anchor.end)} · {$rearrangeState.failure.sourceText}</p>
+              <p>{$rearrangeState.failure.reason}</p>
+              <div class="actions"><button class="btn btn-sm" onclick={restoreRearrangement}>恢复上一版时间轴</button><button class="btn btn-sm variant-filled-primary" onclick={continueRearrangement}>从失败点继续</button></div>
+            </div>
+          {/if}
         </section>
 
         <section class="panel">
@@ -120,7 +147,7 @@
         </form>
       </section>
       <section class="panel"><div class="panel-head"><h2>审校记录</h2></div><div class="events">{#each $reviewEvents as item}<article><b>{item.action}</b><p>{item.detail}</p><small>{item.actor} · {new Date(item.time).toLocaleTimeString("zh-CN")}</small></article>{/each}{#if !$reviewEvents.length}<p>暂无审校操作。</p>{/if}</div></section>
-      <section class="panel"><div class="panel-head"><h2>版本快照</h2></div><div class="events">{#each $snapshots as item}<article><b>{item.name}</b><p>{item.cues.length} 条字幕 · {new Date(item.time).toLocaleString("zh-CN")}</p><button class="btn btn-sm" onclick={() => restoreSnapshot(item.id)}>恢复</button></article>{/each}{#if !$snapshots.length}<p>使用 ⌘S 或顶部按钮创建快照。</p>{/if}</div></section>
+      <section class="panel"><div class="panel-head"><h2>版本快照</h2></div>{#if restoreNotice}<p class="notice">{restoreNotice}</p>{/if}<div class="events">{#each $snapshots as item}<article><b>{item.name}</b><p>{item.cues.length} 条字幕 · {new Date(item.time).toLocaleString("zh-CN")}</p><button class="btn btn-sm" onclick={() => { const n = restoreSnapshot(item.id); restoreNotice = n > 0 ? `已恢复「${item.name}」：${n} 条译文结论失效，已进入待复核` : `已恢复「${item.name}」：审校结论均有效`; }}>恢复</button></article>{/each}{#if !$snapshots.length}<p>使用 ⌘S 或顶部按钮创建快照。</p>{/if}</div></section>
     </div>
   </main>
 </div>

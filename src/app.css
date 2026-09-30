@@ -21,7 +21,7 @@ header h1 { margin: 5px 0; font-size: clamp(25px, 3vw, 38px); }
 header p, header small { color: #697880; margin: 0; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
 .header-actions select, .btn { border: 1px solid #ccd7db; border-radius: 8px; padding: 9px 12px; background: #fff; cursor: pointer; }
-.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin-bottom: 18px; }
+.metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 13px; margin-bottom: 18px; }
 .metrics article, .panel { background: #fff; border: 1px solid #dae3e5; border-radius: 12px; box-shadow: 0 10px 28px rgba(24,49,53,.05); }
 .metrics article { padding: 15px; }
 .metrics span, .metrics b { display: block; }
@@ -38,14 +38,21 @@ header p, header small { color: #697880; margin: 0; }
 .cue.待审 { border-left-color: #e4a11b; }
 .cue.已通过 { border-left-color: #168f7f; }
 .cue.退回 { border-left-color: #d94c4c; background: #fff7f7; }
+.cue.待复核 { border-left-color: #d97706; background: #fff8ec; }
 .cue time { font-weight: 800; color: #40535a; }
 .cue time small, .cue p, .cue b { display: block; }
 .cue p { color: #63737a; margin: 5px 0 0; }
 .cue small { color: #859198; margin-top: 3px; }
+.cue small.invalid { color: #b25e09; }
 .chip { display: inline-block; width: max-content; border-radius: 99px; background: #e8eef0; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .chip.待审 { background: #fff1d8; color: #996515; }
 .chip.已通过 { background: #def5ee; color: #0f735f; }
 .chip.退回 { background: #fde5e5; color: #a43838; }
+.chip.待复核 { background: #fdecd2; color: #9a5b00; }
+.notice { color: #9a5b00; font-size: 13px; margin: 8px 0 0; }
+.invalid-banner { border: 1px solid #f0c98a; background: #fff9ef; border-radius: 9px; padding: 10px; margin-bottom: 12px; }
+.invalid-banner p { margin: 4px 0 0; color: #6f685a; font-size: 13px; }
+.rearrange-report { color: #0f735f; font-size: 13px; margin: 8px 0 0; }
 .right-stack { display: grid; gap: 18px; }
 .label { display: grid; gap: 6px; color: #66767d; font-size: 13px; margin-bottom: 10px; }
 .input, .textarea { width: 100%; border: 1px solid #cdd9dc; border-radius: 8px; padding: 9px 10px; background: #fbfdfd; color: #17212b; }
