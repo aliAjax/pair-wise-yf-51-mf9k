@@ -7,7 +7,7 @@
   import { z } from "zod";
   import * as m from "$lib/paraglide/messages.js";
   import { setLocale } from "$lib/paraglide/runtime.js";
-  import { activeCues, activeTrackId, conflicts, createSnapshot, cues, lockTerm, mergeNext, nudgeCue, resolveConflict, restoreSnapshot, reviewCue, reviewEvents, reviewer, selectedCueId, setCueStatus, snapshots, splitCue, terms, tracks, updateCue } from "$lib/stores/subtitles";
+  import { activeCues, activeTrackId, conflicts, createSnapshot, cues, invalidations, lastRestoreReport, lockTerm, mergeNext, nudgeCue, realignFailure, realignTranslations, resolveConflict, restoreSnapshot, resumeRealign, reviewCue, reviewEvents, reviewer, selectedCueId, setCueStatus, snapshots, splitCue, terms, tracks, updateCue } from "$lib/stores/subtitles";
   import type { Cue } from "$lib/stores/subtitles";
 
   const cueSchema = z.object({ source: z.string().min(2), translated: z.string().min(2), start: z.coerce.number().min(0), duration: z.coerce.number().min(0.5).max(30) });
@@ -25,6 +25,8 @@
   const query = createQuery(queryOptions);
   const activeTrack = $derived($tracks.find((track) => track.id === $activeTrackId));
   const selected = $derived($cues.find((cue) => cue.id === $selectedCueId));
+  const sourceTrack = $derived($tracks.find((track) => track.locale === "zh"));
+  const selectedTermIssues = $derived(selected && sourceTrack && selected.trackId !== sourceTrack.id ? $terms.filter((term) => term.status === "已锁定" && selected.source.includes(term.source) && !selected.translated.includes(term.target)) : []);
   let reviewNote = $state("");
 
   function formatTime(value: number) {
@@ -60,17 +62,25 @@
   <main>
     <header><div><small>纪录片《潮汐线》 · 第 3 集</small><h1>{m.title()}</h1><p>多语种轨道、术语锁定与审校反馈在同一时间轴协作。</p></div><div class="header-actions"><select value={$activeTrackId} onchange={(event) => activeTrackId.set(event.currentTarget.value)}>{#each $tracks as track}<option value={track.id}>{track.name}</option>{/each}</select><button onclick={() => setLocale("en")}>EN</button><button onclick={() => setLocale("zh")}>中文</button></div></header>
 
-    <section class="metrics"><article><span>当前轨道</span><b>{activeTrack?.name}</b></article><article><span>字幕条数</span><b>{$activeCues.length}</b></article><article><span>待审</span><b>{$activeCues.filter((cue) => cue.status === "待审").length}</b></article><article><span>已锁定术语</span><b>{$terms.filter((term) => term.status === "已锁定").length}</b></article></section>
+    <section class="metrics"><article><span>当前轨道</span><b>{activeTrack?.name}</b></article><article><span>字幕条数</span><b>{$activeCues.length}</b></article><article><span>待审</span><b>{$activeCues.filter((cue) => cue.status === "待审").length}</b></article><article><span>待复核</span><b>{$activeCues.filter((cue) => cue.status === "待复核").length}</b></article><article><span>已锁定术语</span><b>{$terms.filter((term) => term.status === "已锁定").length}</b></article></section>
 
     <div class="editor-grid">
       <section class="panel timeline">
-        <div class="panel-head"><div><h2>时间轴</h2><small>拖动或点击选择，所有修改保存到浏览器本地</small></div><button class="btn variant-filled-primary" onclick={() => createSnapshot()}>保存快照</button></div>
+        <div class="panel-head"><div><h2>时间轴</h2><small>拖动或点击选择，所有修改保存到浏览器本地</small></div><div class="actions"><button class="btn" onclick={() => realignTranslations("手动重排")}>继承重排</button><button class="btn variant-filled-primary" onclick={() => createSnapshot()}>保存快照</button></div></div>
+        {#if $realignFailure}
+          <div class="realign-failure">
+            <b>继承重排失败，已恢复上一版时间轴</b>
+            <p>译文 {$realignFailure.cueId}：{$realignFailure.reason}</p>
+            <small>已处理 {$realignFailure.done.length} 条 · 待续 {$realignFailure.remaining.length} 条 · {new Date($realignFailure.at).toLocaleTimeString("zh-CN")}</small>
+            <div><button class="btn btn-sm variant-filled-primary" onclick={() => resumeRealign()}>从失败点继续</button></div>
+          </div>
+        {/if}
         {#if $query.isPending}<p>正在加载字幕轨道…</p>{:else}
           <div class="cue-list">
             {#each $activeCues as cue}
               <div role="button" tabindex="0" class:selected={cue.id === $selectedCueId} class={`cue ${cue.status}`} onclick={() => selectedCueId.set(cue.id)} onkeydown={(event) => { if (event.key === "Enter" || event.key === " ") selectedCueId.set(cue.id); }}>
                 <time>{formatTime(cue.start)}<small>{formatTime(cue.end)}</small></time>
-                <div><b>{cue.source}</b><p>{cue.translated || "尚未填写译文"}</p></div>
+                <div><b>{cue.source}</b><p>{cue.translated || "尚未填写译文"}</p>{#if cue.invalidatedReason}<small class="stale">⚠ {cue.invalidatedReason}</small>{/if}</div>
                 <span class={`chip ${cue.status}`}>{cue.status}</span>
                 <button class="btn btn-sm" onclick={(event) => { event.stopPropagation(); nudgeCue(cue.id, -0.2); }}>−0.2s</button>
                 <button class="btn btn-sm" onclick={(event) => { event.stopPropagation(); nudgeCue(cue.id, 0.2); }}>+0.2s</button>
@@ -84,10 +94,12 @@
         <section class="panel">
           <div class="panel-head"><h2>字幕编辑</h2>{#if selected}<span class={`chip ${selected.status}`}>{selected.status}</span>{/if}</div>
           {#if selected}
+            {#if selected.status === "待复核"}<div class="banner">⚠ {selected.invalidatedReason ?? "审校结论已失效"}，请译者复核译文后重新提交。</div>{/if}
             <label class="label"><span>原文字幕</span><input class="input" value={selected.source} oninput={(event) => updateCue(selected.id, { source: event.currentTarget.value })} /></label>
             <label class="label"><span>译文</span><textarea class="textarea" value={selected.translated} oninput={(event) => updateCue(selected.id, { translated: event.currentTarget.value })}></textarea></label>
+            {#if selectedTermIssues.length}<p class="term-issues">锁定术语未落实：{selectedTermIssues.join("；")}，不能直接通过。</p>{/if}
             <div class="time-fields"><label class="label"><span>开始秒</span><input class="input" type="number" step="0.1" value={selected.start} oninput={(event) => updateCue(selected.id, { start: Number(event.currentTarget.value) })} /></label><label class="label"><span>结束秒</span><input class="input" type="number" step="0.1" value={selected.end} oninput={(event) => updateCue(selected.id, { end: Number(event.currentTarget.value) })} /></label></div>
-            <div class="actions"><button class="btn" onclick={() => setCueStatus(selected.id, "待审")}>提交审校</button><button class="btn variant-filled-success" onclick={() => reviewCue(selected.id, true)}>审校通过</button><button class="btn variant-filled-error" onclick={() => reviewCue(selected.id, false, reviewNote || "请核对术语和断句")}>退回修改</button></div>
+            <div class="actions"><button class="btn" onclick={() => setCueStatus(selected.id, "待审")}>提交审校</button><button class="btn variant-filled-success" disabled={selectedTermIssues.length > 0} onclick={() => reviewCue(selected.id, true)}>审校通过</button><button class="btn variant-filled-error" onclick={() => reviewCue(selected.id, false, reviewNote || "请核对术语和断句")}>退回修改</button></div>
             <label class="label"><span>审校备注</span><input class="input" bind:value={reviewNote} placeholder="退回时填写具体原因" /></label>
           {:else}<p>请先选择一条字幕。</p>{/if}
         </section>
@@ -105,6 +117,16 @@
             <article class="conflict"><b>{conflict.message}</b><p>协作版本：{formatTime(conflict.remoteStart)}–{formatTime(conflict.remoteEnd)}</p><div class="actions"><button class="btn btn-sm" disabled={conflict.status !== "待处理"} onclick={() => resolveConflict(conflict.id, "采用本地")}>保留本机</button><button class="btn btn-sm variant-filled-primary" disabled={conflict.status !== "待处理"} onclick={() => resolveConflict(conflict.id, "采用协作版本")}>采用协作版本</button><span class="chip">{conflict.status}</span></div></article>
           {/each}
         </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>失效结论</h2><small>原文变更或快照恢复后转入待复核</small></div>
+          <div class="events">
+            {#each $invalidations as item}
+              <article><b>{item.origin}</b><p>译文 {item.cueId}：{item.reason}</p><small>{new Date(item.time).toLocaleTimeString("zh-CN")}</small></article>
+            {/each}
+            {#if !$invalidations.length}<p>暂无失效结论。</p>{/if}
+          </div>
+        </section>
       </aside>
     </div>
 
@@ -120,7 +142,19 @@
         </form>
       </section>
       <section class="panel"><div class="panel-head"><h2>审校记录</h2></div><div class="events">{#each $reviewEvents as item}<article><b>{item.action}</b><p>{item.detail}</p><small>{item.actor} · {new Date(item.time).toLocaleTimeString("zh-CN")}</small></article>{/each}{#if !$reviewEvents.length}<p>暂无审校操作。</p>{/if}</div></section>
-      <section class="panel"><div class="panel-head"><h2>版本快照</h2></div><div class="events">{#each $snapshots as item}<article><b>{item.name}</b><p>{item.cues.length} 条字幕 · {new Date(item.time).toLocaleString("zh-CN")}</p><button class="btn btn-sm" onclick={() => restoreSnapshot(item.id)}>恢复</button></article>{/each}{#if !$snapshots.length}<p>使用 ⌘S 或顶部按钮创建快照。</p>{/if}</div></section>
+      <section class="panel"><div class="panel-head"><h2>版本快照</h2></div><div class="events">{#each $snapshots as item}<article><b>{item.name}</b><p>{item.cues.length} 条字幕 · {new Date(item.time).toLocaleString("zh-CN")}</p><button class="btn btn-sm" onclick={() => restoreSnapshot(item.id)}>恢复</button></article>{/each}{#if !$snapshots.length}<p>使用 ⌘S 或顶部按钮创建快照。</p>{/if}</div>
+        {#if $lastRestoreReport}
+          <article class="restore-report">
+            <b>已恢复「{$lastRestoreReport.name}」</b>
+            {#if $lastRestoreReport.invalidated.length}
+              <p>{$lastRestoreReport.invalidated.length} 条审校结论已失效：</p>
+              {#each $lastRestoreReport.invalidated as item}<small class="report-line">译文 {item.cueId}：{item.reason}</small>{/each}
+            {:else}
+              <p>所有审校结论仍然有效。</p>
+            {/if}
+          </article>
+        {/if}
+      </section>
     </div>
   </main>
 </div>
